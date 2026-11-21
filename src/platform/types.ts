@@ -69,4 +69,5 @@ export interface Platform {
   hideKeyboard?(): void
   onShow(callback: () => void): void
   onHide(callback: () => void): void
+  onResize(callback: (info: SystemInfo) => void): void
 }

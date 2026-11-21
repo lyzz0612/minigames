@@ -1,25 +1,26 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import { resolve } from 'path'
 
 export default defineConfig({
+  base: './',
+  define: {
+    __PLATFORM__: JSON.stringify('web')
+  },
   resolve: {
     alias: {
-      '@core': resolve(__dirname, 'src/core'),
-      '@components': resolve(__dirname, 'src/components'),
-      '@systems': resolve(__dirname, 'src/systems'),
-      '@scenes': resolve(__dirname, 'src/scenes'),
-      '@utils': resolve(__dirname, 'src/utils'),
       '@': resolve(__dirname, 'src')
     }
   },
   build: {
-    target: 'esnext',
-    minify: 'terser',
+    target: 'es2019',
+    minify: 'esbuild',
+    outDir: 'dist/h5',
     sourcemap: false
   },
   test: {
     globals: true,
-    environment: 'jsdom',
+    environment: 'node',
+    include: ['tests/**/*.test.ts'],
     coverage: {
       reporter: ['text', 'json', 'html']
     }

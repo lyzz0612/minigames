@@ -26,7 +26,7 @@ class MiniTextField extends Container {
   private placeholderView: Text
   private readonly onChange?: (value: string) => void
 
-  constructor(private options: TextFieldOptions) {
+  constructor(options: TextFieldOptions) {
     super()
     const platform = getPlatform()
     const width = options.width ?? 520

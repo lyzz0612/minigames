@@ -10,7 +10,7 @@ class MiniGameAudioHandle implements AudioHandle {
   private ended: (() => void) | null = null
   private error: ((message: string) => void) | null = null
 
-  constructor(private api: AnyRecord, src: string) {
+  constructor(api: AnyRecord, src: string) {
     this.context = api.createInnerAudioContext()
     this.context.src = src
     this.context.onCanplay(() => this.canPlay?.())
@@ -179,7 +179,7 @@ export function createMiniGamePlatform(api: AnyRecord, name: PlatformName): Plat
         defaultValue: options.defaultValue ?? '',
         maxLength: options.maxLength ?? 140,
         multiple: false,
-        confirmHold: true,
+        confirmHold: false,
         confirmType: 'done'
       })
     },
@@ -191,6 +191,9 @@ export function createMiniGamePlatform(api: AnyRecord, name: PlatformName): Plat
     },
     onHide(callback) {
       api.onHide?.(callback)
+    },
+    onResize(callback) {
+      api.onWindowResize?.(() => callback(getSystemInfo()))
     }
   }
 }

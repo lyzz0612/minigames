@@ -2,6 +2,9 @@ import { Container, Graphics, Text } from 'pixi.js'
 import type { TextStyleOptions } from 'pixi.js'
 import { Button, CheckBox, CircularProgressBar, ProgressBar, RadioGroup, Slider, Switcher } from '@pixi/ui'
 import { THEME } from './theme'
+import { formatTime } from '../utils/time'
+
+export { formatTime }
 
 const { colors, radius, font, fontSize } = THEME
 
@@ -32,7 +35,7 @@ export function label(text: string, options: LabelOptions = {}): Text {
 
 /** 纵向堆叠容器，自动计算每个子项的位置。 */
 export class VStack extends Container {
-  private cursor = 0
+  private offset = 0
   private readonly gap: number
 
   constructor(gap = 16) {
@@ -41,20 +44,20 @@ export class VStack extends Container {
   }
 
   add(child: Container, gap = this.gap): this {
-    child.y = this.cursor
+    child.y = this.offset
     this.addChild(child)
-    this.cursor += child.height + gap
+    this.offset += child.height + gap
     return this
   }
 
   get contentHeight(): number {
-    return Math.max(0, this.cursor - this.gap)
+    return Math.max(0, this.offset - this.gap)
   }
 }
 
 /** 横向堆叠容器。 */
 export class HStack extends Container {
-  private cursor = 0
+  private offset = 0
   private readonly gap: number
 
   constructor(gap = 16) {
@@ -63,9 +66,9 @@ export class HStack extends Container {
   }
 
   add(child: Container, gap = this.gap): this {
-    child.x = this.cursor
+    child.x = this.offset
     this.addChild(child)
-    this.cursor += child.width + gap
+    this.offset += child.width + gap
     return this
   }
 }
@@ -77,7 +80,7 @@ export function panelBackground(width: number, height: number, fill = colors.pan
     .stroke({ color: colors.border, width: 2 })
 }
 
-export function badge(text: string, color = colors.accent): Container {
+export function badge(text: string, color: number = colors.accent): Container {
   const textView = label(text, { size: fontSize.tiny, color: 0x081018, weight: 'bold' })
   const paddingX = 16
   const width = textView.width + paddingX * 2
@@ -230,6 +233,7 @@ export function createToggle(value = false): DemoToggle {
 export interface DemoSlider {
   view: Slider
   onChange(callback: (value: number) => void): void
+  onUpdate(callback: (value: number) => void): void
 }
 
 export function createSlider(options: {
@@ -268,6 +272,9 @@ export function createSlider(options: {
   return {
     view: slider,
     onChange(callback: (value: number) => void) {
+      slider.onChange.connect(callback)
+    },
+    onUpdate(callback: (value: number) => void) {
       slider.onUpdate.connect(callback)
     }
   }
@@ -297,12 +304,4 @@ export function createCircularProgress(value = 65): CircularProgressBar {
     value,
     cap: 'round'
   })
-}
-
-export function formatTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return '00:00'
-  const total = Math.floor(seconds)
-  const minutes = Math.floor(total / 60)
-  const rest = total % 60
-  return `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`
 }

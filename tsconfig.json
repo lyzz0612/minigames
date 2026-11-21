@@ -19,11 +19,6 @@
     "allowSyntheticDefaultImports": true,
     "baseUrl": ".",
     "paths": {
-      "@core/*": ["src/core/*"],
-      "@components/*": ["src/components/*"],
-      "@systems/*": ["src/systems/*"],
-      "@scenes/*": ["src/scenes/*"],
-      "@utils/*": ["src/utils/*"],
       "@/*": ["src/*"]
     }
   },

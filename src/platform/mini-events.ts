@@ -2,7 +2,7 @@
  * 小游戏没有 DOM 事件系统，这里把 wx/tt 的 touch 事件桥接成 Pixi v8 需要的
  * pointer 事件，并提供 document / window 级监听的最小实现。
  */
-import type { Platform, SystemInfo } from './types'
+import type { SystemInfo } from './types'
 
 type Listener = (event: unknown) => void
 

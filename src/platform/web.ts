@@ -171,6 +171,9 @@ export function createWebPlatform(): Platform {
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) callback()
       })
+    },
+    onResize(callback) {
+      window.addEventListener('resize', () => callback(systemInfo()))
     }
   }
 }
