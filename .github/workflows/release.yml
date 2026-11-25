@@ -1,0 +1,306 @@
+name: release
+
+# 构建小游戏产物 → 上传到 Cloudflare R2 → 把元数据上报给 deploy-center。
+#
+# 触发方式：
+#   - 推 v* 标签：构建全部平台（h5 + wechat + douyin）
+#   - 手动触发：可选单个平台或 all；取消勾选 upload 则只构建并把 zip 挂成
+#     Actions artifact，不碰 R2、不上报（第一次验证用这个）
+#
+# 产物文件不经过中控台（deploy-center docs/ci-report.md D1）：CI 只负责把包放到
+# 一个长期可访问的地址，再 POST 元数据。上报只登记，不触发发布——发布由人在后台发起。
+#
+# 需要的仓库配置（Settings → Secrets and variables → Actions）：
+#
+#   Variables
+#     CONSOLE_URL            中控台地址，例如 https://deploy.example.com
+#     CONSOLE_GAME_SLUG      中控台里登记的游戏 slug，例如 demo
+#     R2_ACCOUNT_ID          Cloudflare 账号 ID（拼 S3 endpoint 用）
+#     R2_BUCKET              R2 bucket 名
+#     R2_PUBLIC_BASE_URL     bucket 的公开读地址，例如 https://pub-xxxx.r2.dev
+#                            或自定义域。必须长期有效：签名 URL 隔天点发布会 403
+#     R2_PREFIX              可选，bucket 内的前缀，例如 builds
+#
+#   Secrets
+#     R2_ACCESS_KEY_ID       R2 API Token 的 Access Key ID
+#     R2_SECRET_ACCESS_KEY   R2 API Token 的 Secret Access Key
+#     CONSOLE_CI_KEY         中控台「设置 → CI key」里的值
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: '构建哪个平台'
+        required: true
+        default: all
+        type: choice
+        options: [all, h5, wechat, douyin]
+      upload:
+        description: '上传 R2 并上报中控台（取消勾选只构建）'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      platforms: ${{ steps.plan.outputs.platforms }}
+      build_id: ${{ steps.plan.outputs.build_id }}
+      upload: ${{ steps.plan.outputs.upload }}
+    steps:
+      - name: 规划构建矩阵
+        id: plan
+        env:
+          # 走 env 而不是把 ${{ }} 直接拼进脚本：输入值里的引号不会破坏脚本
+          EVENT: ${{ github.event_name }}
+          PLATFORM: ${{ inputs.platform }}
+          UPLOAD: ${{ inputs.upload }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+
+          # 标签触发 = 发布全部平台；手动触发按选择，默认也是全部
+          if [ "$EVENT" = "workflow_dispatch" ] && [ "$PLATFORM" != "all" ]; then
+            platforms="[\"$PLATFORM\"]"
+          else
+            platforms='["h5","wechat","douyin"]'
+          fi
+
+          # 标签触发一定上传；手动触发看勾选
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            upload="${UPLOAD:-true}"
+          else
+            upload=true
+          fi
+
+          # buildId 与 (game, packageType) 一起构成中控台的幂等键。
+          # 分支名可能带斜杠，换成连字符才能进文件名和对象 key。
+          build_id="${REF_NAME//\//-}-${RUN_NUMBER}"
+
+          {
+            echo "platforms=$platforms"
+            echo "build_id=$build_id"
+            echo "upload=$upload"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "平台：$platforms"
+          echo "buildId：$build_id"
+          echo "上传与上报：$upload"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # 一个平台失败不连带取消其他平台：已经构好的包仍然值得上报
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(needs.prepare.outputs.platforms) }}
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      BUILD_ID: ${{ needs.prepare.outputs.build_id }}
+      DO_UPLOAD: ${{ needs.prepare.outputs.upload }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: 校验上传与上报所需的配置
+        if: env.DO_UPLOAD == 'true'
+        env:
+          CONSOLE_URL: ${{ vars.CONSOLE_URL }}
+          CONSOLE_GAME_SLUG: ${{ vars.CONSOLE_GAME_SLUG }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          CONSOLE_CI_KEY: ${{ secrets.CONSOLE_CI_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in CONSOLE_URL CONSOLE_GAME_SLUG R2_ACCOUNT_ID R2_BUCKET \
+                      R2_PUBLIC_BASE_URL R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY \
+                      CONSOLE_CI_KEY; do
+            [ -n "${!name:-}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::缺少仓库配置：${missing[*]}（见本工作流头部注释）"
+            exit 1
+          fi
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 构建 ${{ matrix.platform }}
+        run: node scripts/build.mjs "$PLATFORM"
+
+      - name: 打包 zip
+        id: pack
+        env:
+          GAME: ${{ vars.CONSOLE_GAME_SLUG || 'game' }}
+        run: |
+          set -euo pipefail
+          src="dist/$PLATFORM"
+          [ -d "$src" ] || { echo "::error::构建产物目录不存在：$src"; exit 1; }
+
+          mkdir -p out
+          zip_name="${GAME}-${PLATFORM}-${BUILD_ID}.zip"
+          zip_path="$PWD/out/$zip_name"
+
+          # 在产物目录内打包：解压后 game.js / game.json 在压缩包根层，
+          # 微信与抖音开发者工具才认得这个结构
+          ( cd "$src" && zip -qr "$zip_path" . )
+
+          sha256=$(sha256sum "$zip_path" | cut -d' ' -f1)
+          size=$(stat -c%s "$zip_path")
+
+          {
+            echo "zip_name=$zip_name"
+            echo "zip_path=$zip_path"
+            echo "sha256=$sha256"
+            echo "size=$size"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "$zip_name  $((size / 1024)) KB  sha256=$sha256"
+
+      - name: 上传 Actions artifact（留痕，便于本地复核）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}-${{ needs.prepare.outputs.build_id }}
+          path: out/${{ steps.pack.outputs.zip_name }}
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: 上传到 Cloudflare R2
+        id: r2
+        if: env.DO_UPLOAD == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          # R2 不接受 aws-cli 默认附加的分块校验头，要求「仅在必要时计算」
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_PREFIX: ${{ vars.R2_PREFIX }}
+          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+          GAME: ${{ vars.CONSOLE_GAME_SLUG }}
+          ZIP_NAME: ${{ steps.pack.outputs.zip_name }}
+          ZIP_PATH: ${{ steps.pack.outputs.zip_path }}
+        run: |
+          set -euo pipefail
+
+          prefix="${R2_PREFIX:-}"
+          prefix="${prefix#/}"
+          prefix="${prefix%/}"
+          key="${prefix:+$prefix/}${GAME}/${PLATFORM}/${ZIP_NAME}"
+
+          aws s3 cp "$ZIP_PATH" "s3://${R2_BUCKET}/${key}" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --content-type application/zip \
+            --only-show-errors
+
+          base="${R2_PUBLIC_BASE_URL%/}"
+          artifact_url="${base}/${key}"
+
+          # 立刻按公开地址回读一次：上报一个取不到的 URL，等于把失败推迟到发布那天
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -I --retry 3 --retry-delay 2 "$artifact_url" || echo 000)
+          if [ "$code" != "200" ]; then
+            echo "::error::产物已上传但公开地址不可读（HTTP $code）：$artifact_url"
+            echo "::error::检查 bucket 是否开启公开读访问，以及 R2_PUBLIC_BASE_URL 是否正确"
+            exit 1
+          fi
+
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "artifact_url=$artifact_url" >> "$GITHUB_OUTPUT"
+          echo "已上传：$artifact_url"
+
+      - name: 上报中控台
+        id: report
+        if: env.DO_UPLOAD == 'true'
+        env:
+          CONSOLE_URL: ${{ vars.CONSOLE_URL }}
+          CI_KEY: ${{ secrets.CONSOLE_CI_KEY }}
+          GAME: ${{ vars.CONSOLE_GAME_SLUG }}
+          ARTIFACT_URL: ${{ steps.r2.outputs.artifact_url }}
+          SIZE_BYTES: ${{ steps.pack.outputs.size }}
+          SHA256: ${{ steps.pack.outputs.sha256 }}
+          COMMIT_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # commit message 里的引号与换行会把手写的 JSON 搞坏，交给 jq 拼
+          description="$(git log -1 --pretty=%s) (${REF_NAME})"
+
+          payload=$(jq -n \
+            --arg game        "$GAME" \
+            --arg packageType "$PLATFORM" \
+            --arg buildId     "$BUILD_ID" \
+            --arg artifactUrl "$ARTIFACT_URL" \
+            --argjson sizeBytes "$SIZE_BYTES" \
+            --arg sha256      "$SHA256" \
+            --arg commitSha   "$COMMIT_SHA" \
+            --arg description "$description" \
+            '$ARGS.named')
+
+          # --fail-with-body：没有它，curl 遇到 400 仍然退出码 0，CI 会显示绿色而实际没登记上
+          response=$(curl -sS --fail-with-body \
+            --retry 3 --retry-delay 3 --retry-connrefused --max-time 60 \
+            -X POST "${CONSOLE_URL%/}/api/ci/builds" \
+            -H "Authorization: Bearer ${CI_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d "$payload")
+
+          echo "$response"
+          echo "created=$(jq -r '.created // false' <<< "$response")" >> "$GITHUB_OUTPUT"
+
+      - name: 写运行摘要
+        if: always() && steps.pack.outputs.zip_name != ''
+        env:
+          ZIP_NAME: ${{ steps.pack.outputs.zip_name }}
+          SIZE_BYTES: ${{ steps.pack.outputs.size }}
+          SHA256: ${{ steps.pack.outputs.sha256 }}
+          ARTIFACT_URL: ${{ steps.r2.outputs.artifact_url }}
+          CREATED: ${{ steps.report.outputs.created }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### ${PLATFORM}"
+            echo
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| buildId | \`${BUILD_ID}\` |"
+            echo "| 包 | \`${ZIP_NAME}\` |"
+            echo "| 大小 | $((SIZE_BYTES / 1024)) KB |"
+            echo "| sha256 | \`${SHA256}\` |"
+            echo "| 产物地址 | ${ARTIFACT_URL:-（未上传）} |"
+            if [ "$DO_UPLOAD" = "true" ]; then
+              case "${CREATED:-}" in
+                true)  echo "| 上报 | 新建记录 |" ;;
+                false) echo "| 上报 | 覆盖既有记录 |" ;;
+                *)     echo "| 上报 | 失败，见步骤日志 |" ;;
+              esac
+            else
+              echo "| 上报 | 跳过（仅构建） |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
