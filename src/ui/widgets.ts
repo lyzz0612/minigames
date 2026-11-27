@@ -302,6 +302,10 @@ export function createCircularProgress(value = 65): CircularProgressBar {
     lineWidth: 18,
     radius: 64,
     value,
-    cap: 'round'
+    cap: 'round',
+    // pixi.js 8 的描边样式会把 undefined 的 alpha 展开成 NaN（弧线整个不绘制），
+    // 这里必须显式传 1，底环与填充弧才都能正常渲染。
+    fillAlpha: 1,
+    backgroundAlpha: 1
   })
 }

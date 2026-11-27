@@ -182,9 +182,16 @@ export function buildBasicPage(width: number, height: number, onOpenDialog?: () 
   const circularValue = label('65%', { size: fontSize.title, weight: 'bold', align: 'center' })
   circularValue.anchor.set(0.5)
 
+  // CircularProgressBar 把圆环画在以自身原点为圆心的局部坐标上（bounds 为 -r..r）。
+  // 先把环平移 (r, r)，让 circularBox 的 bounds 从 (0,0) 开始：
+  // 1) 文本放在 (r, r) 才是圆心，而不是环的右下角；
+  // 2) 负 bounds 会让 @pixi/ui List 的 getChildOffset 把整个面板右移补偿。
+  const ringCenter = circular.width / 2
+  circular.position.set(ringCenter, ringCenter)
+
   const circularBox = new Container()
   circularBox.addChild(circular)
-  circularValue.position.set(circular.width / 2, circular.height / 2)
+  circularValue.position.set(ringCenter, ringCenter)
   circularBox.addChild(circularValue)
 
   const randomButton = createButton({
@@ -210,6 +217,8 @@ export function buildBasicPage(width: number, height: number, onOpenDialog?: () 
 
   const items = [buttonPanel, togglePanel, progressPanel]
   const view = pageScroll(width, height, items)
+
+  circularBox.x = (innerWidth - circularBox.width) / 2
 
   let elapsed = 0
   return {
