@@ -1,80 +1,65 @@
-# CursorProject
+# minigames
 
-本仓库以 **一个分支一个独立项目** 的方式管理多个实验性项目。`master` 分支仅存放公共配置（如 GitHub Actions Workflow），各项目代码请切换到对应分支查看。
+> 一分支一游戏：每个分支是一个独立小游戏。当前默认分支 `framework` 是基于 Pixi v8 的小游戏框架 demo。
 
-## 分支总览
+同一份源码构建三端：**H5 / 微信小游戏 / 抖音小游戏**。CI 完成构建后把产物上传到 Cloudflare R2，并将元数据上报给发布中控台；发布动作由人在中控台发起，不跟着 commit 走。
 
-| 分支 | 说明 |
-|------|------|
-| `master` | 默认分支，存放 GitHub Actions Workflow 定义和本文档 |
-| `clipboard-sync` | **剪贴板跨端共享**：Cloudflare Worker 后端 + Android 客户端，支持文本剪贴板在多设备间同步 |
-| `family-tree` | 家谱 / 族谱相关项目 |
-| `game_framework` | 游戏框架 |
-| `linuxdo_daily` | LinuxDo 每日任务自动化 |
-| `novel_download` | 小说下载工具 |
-| `tic_tac_toe` | 井字棋游戏 |
-| `wsforward` | WebSocket 转发服务 |
+## 分支
 
-## GitHub Actions Workflows
+| 分支 | 内容 |
+| --- | --- |
+| `framework`（默认） | Pixi v8 + 平台适配层的小游戏框架 demo |
+| 其他 | 每个游戏一个分支。构建参数（游戏 slug、上传目录）是每次构建的输入，不绑在仓库配置上 |
 
-Workflow 文件位于 `master` 分支的 `.github/workflows/`，各功能分支上不保留 workflow 文件。Workflow 内部通过 `ref: clipboard-sync` 固定拉取代码分支，无论 push 还是手动触发都不会误拉 `master`。
+发布中控台的源码在 [deploy-center 分支](https://github.com/lyzz0612/minigames/tree/deploy-center)，独立部署为 Docker 镜像 `ghcr.io/lyzz0612/minigames`，构建上报接口见该分支的 [docs/ci-report.md](https://github.com/lyzz0612/minigames/blob/deploy-center/docs/ci-report.md)。
 
-### Deploy Worker（部署 Cloudflare Worker）
+## 技术栈
 
-- **文件**：`.github/workflows/deploy-worker.yml`
-- **触发条件**：
-  - 推送到 `clipboard-sync` 分支，且 `worker/**` 路径有变更
-  - 在 Actions 页面手动触发（`workflow_dispatch`）
-- **作用**：从 `clipboard-sync` 拉取代码，将 `worker/` 部署为 Cloudflare Worker
+- [Pixi v8](https://pixijs.com/) + TypeScript + Vite 5
+- 平台适配层 `src/platform/`：编译期按 `__PLATFORM__`（`web` / `wechat` / `douyin`）注入，业务代码不写平台分支
+- Vitest / ESLint / Prettier
 
-### Build Android（构建 Android APK）
+## 本地开发
 
-- **文件**：`.github/workflows/build-android.yml`
-- **触发条件**：
-  - 推送到 `clipboard-sync` 分支，且 `android/**` 路径有变更
-  - 在 Actions 页面手动触发（`workflow_dispatch`）
-- **作用**：从 `clipboard-sync` 拉取代码，构建 debug APK 并上传到 Actions Artifacts（保留 30 天）
+```bash
+npm ci
+npm run dev            # H5 开发服务器
+npm run build:h5       # 只构建 H5
+npm run build:wechat   # 只构建微信小游戏
+npm run build:douyin   # 只构建抖音小游戏
+npm run build          # 类型检查 + 构建全部三端
+npm run test           # Vitest
+npm run lint           # ESLint
+npm run typecheck      # tsc --noEmit
+```
 
-### 配置步骤
+小游戏产物在 `dist/<platform>/`：`game.js` + `game.json` + `project.config.json`（微信另有 `project.private.config.json`），用对应平台的开发者工具直接打开该目录。小游戏主包超过 4MB 时构建脚本会告警。
 
-使用 Workflow 前，需要在 GitHub 仓库中配置以下 Secrets（Settings → Secrets and variables → Actions）：
+## 发布流水线
 
-| Secret 名称 | 用途 | 获取方式 |
-|-------------|------|---------|
-| `CLOUDFLARE_API_TOKEN` | Wrangler 部署 Worker 的认证令牌 | [Cloudflare Dashboard → API Tokens](https://dash.cloudflare.com/profile/api-tokens)，创建 Token 时选择 "Edit Cloudflare Workers" 模板 |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 账户 ID | Cloudflare Dashboard 首页右侧栏，或任意 Workers 页面 URL 中的 ID |
-| `KV_NAMESPACE_ID` | KV 命名空间 ID，部署时注入 `wrangler.toml` | 在 Cloudflare 后台创建 KV 命名空间后复制 ID（见下方步骤） |
+定义在 [.github/workflows/release.yml](.github/workflows/release.yml)。职责边界：**CI 只构建与登记，发布由人在中控台发起**。
 
-### 首次部署前的准备
+### 触发
 
-#### 1. 获取 `CLOUDFLARE_ACCOUNT_ID`
+| 方式 | 说明 |
+| --- | --- |
+| 手动（workflow_dispatch） | `game_slug`（必填，中控台登记的游戏 slug）、`upload_dir`（可选，bucket 内目录，留空按 `游戏/平台/` 组织）、`platform`（all / h5 / wechat / douyin）、`upload`（取消勾选只构建并把 zip 挂成 Actions artifact，不碰 R2 与中控台） |
+| 推标签 | tag 名即游戏来源：`<game-slug>-v<版本>`（例如 `demo-v1.0.1`）构建全部平台，游戏取自 tag 名；纯 `v1.0.1` 不触发 |
 
-登录 [Cloudflare Dashboard](https://dash.cloudflare.com/) → 左侧选择你的账户 → 右侧栏 **Account ID** 即是，复制保存。
+### 流程（按平台并行，互不连坐）
 
-#### 2. 创建 `CLOUDFLARE_API_TOKEN`
+`vite build` → 在产物目录内打 zip（`game.js` 在压缩包根层，开发者工具直接识别）→ 计算 sha256 / size → 上传 R2 → 按公开地址回读 200 校验 → `POST /api/ci/builds` 上报中控台。上报幂等键是 `game + packageType + buildId`：重跑同一次构建覆盖既有记录，不会堆积重复条目。
 
-[Cloudflare Dashboard → My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens) → **Create Token** → 选择 **Edit Cloudflare Workers** 模板 → 按需调整权限范围 → **Continue to summary** → **Create Token** → 复制保存（只显示一次）。
+### 凭据与配置
 
-#### 3. 创建 KV 命名空间，获取 `KV_NAMESPACE_ID`
+- **R2 五件套**（account_id / bucket / public_base_url / access_key_id / secret_access_key）不存本仓库：CI 用 [lyzz0612/shared-workflows](https://github.com/lyzz0612/shared-workflows) 的 `fetch-secrets@v1` 凭 GitHub OIDC 从 [Secret Gate](https://secret-gate.skyup.top)（源码 [lyzz0612/deploy-center](https://github.com/lyzz0612/deploy-center)）拉取 `cf/r2` 组，写入 `CF_R2_*` 环境变量并在日志中打码。首次运行会自动登记为 guest 并在导出处失败——去 gate 后台把本仓库身份提级 normal 并授权 `cf/r2` 组，再跑即绿。
+- 本仓库只需要两个配置：
 
-[Cloudflare Dashboard](https://dash.cloudflare.com/) → 左侧菜单 **Workers 和 Pages** → **KV** → **Create a namespace** → 名称填 `CLIPBOARD_KV`（或任意名称） → **Add** → 创建完成后，在列表中点击该命名空间 → 页面 URL 或详情中可以看到 **Namespace ID**，复制保存。
+| 类型 | 名称 | 用途 |
+| --- | --- | --- |
+| Variable | `CONSOLE_URL` | 发布中控台地址 |
+| Secret | `CONSOLE_CI_KEY` | 中控台「设置 → CI key」的值 |
 
-#### 4. 设置 Worker 运行时密钥 `JWT_SECRET`
+## 许可
 
-首次部署成功后，在 Cloudflare Dashboard → **Workers 和 Pages** → 点击 `clipboard-sync` Worker → **Settings** → **Variables and Secrets** → **Add** → 名称填 `JWT_SECRET`，值填一个随机字符串（建议 32 位以上），类型选 **Secret** → 保存。
-
-> 也可以通过命令行 `npx wrangler secret put JWT_SECRET` 完成，效果一样。
-
-#### 5. 配置 GitHub Secrets
-
-GitHub 仓库页面 → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**，依次添加以上三个：`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`KV_NAMESPACE_ID`。
-
-#### 6. 触发部署
-
-推送代码到 `clipboard-sync` 分支（`worker/**` 有变更时自动触发），或在 Actions 页面手动触发。
-
-### 手动触发
-
-在 GitHub 仓库页面：**Actions** → 选择 Workflow → 右上角 **Run workflow** → 点击运行。
-
-> Workflow 内部硬编码了 `ref: clipboard-sync`，所以手动触发时无需额外选择分支。`workflow_dispatch` 按钮只有在默认分支（`master`）上存在 Workflow 文件时才会显示，这也是 Workflow 文件放在 `master` 分支的原因。
+MIT（[package.json](package.json) 声明；暂无独立 LICENSE 文件）。
