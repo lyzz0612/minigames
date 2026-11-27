@@ -3,7 +3,7 @@ name: release
 # 构建小游戏产物 → 上传到 Cloudflare R2 → 把元数据上报给 deploy-center。
 #
 # 触发方式：
-#   - 推 v* 标签：构建全部平台（h5 + wechat + douyin）
+#   - 推 <game-slug>-v* 标签：构建全部平台（h5 + wechat + douyin），游戏取自 tag 名
 #   - 手动触发：可选单个平台或 all；取消勾选 upload 则只构建并把 zip 挂成
 #     Actions artifact，不碰 R2、不上报（第一次验证用这个）
 #
@@ -18,21 +18,36 @@ name: release
 # guest 并在导出处硬失败——去 gate 后台把本仓库身份提级 normal 并授权
 # cf/r2 组，再跑一次即绿。
 #
+# 游戏身份与上传目录是构建参数，不是仓库配置：本仓库不同分支各对应一个游戏，
+# 每次构建都会不一样——
+#   - 手动触发：填「游戏 slug」与「上传目录」两个 input
+#   - 推标签：tag 名即游戏来源，格式必须是 <game-slug>-v<版本>，例如
+#     demo-v1.0.1（纯 v1.0.1 不触发本工作流）；上传目录为空，bucket 根下按
+#     <game>/<platform>/ 组织
+#
 # 本仓库只需要配（Settings → Secrets and variables → Actions）：
 #
 #   Variables
 #     CONSOLE_URL            中控台地址，例如 https://deploy.example.com
-#     CONSOLE_GAME_SLUG      中控台里登记的游戏 slug，例如 demo
-#     R2_PREFIX              可选，bucket 内的前缀，例如 builds
 #
 #   Secrets
 #     CONSOLE_CI_KEY         中控台「设置 → CI key」里的值
 
 on:
   push:
-    tags: ['v*']
+    # <game-slug>-v<版本>，例如 demo-v1.0.1；纯 v* 标签不触发
+    tags: ['*-v*']
   workflow_dispatch:
     inputs:
+      game_slug:
+        description: '游戏 slug（中控台登记的游戏，例如 demo）'
+        required: true
+        type: string
+      upload_dir:
+        description: '上传目录（bucket 内前缀，留空则按 游戏/平台 组织）'
+        required: false
+        default: ''
+        type: string
       platform:
         description: '构建哪个平台'
         required: true
@@ -60,6 +75,8 @@ jobs:
       platforms: ${{ steps.plan.outputs.platforms }}
       build_id: ${{ steps.plan.outputs.build_id }}
       upload: ${{ steps.plan.outputs.upload }}
+      game_slug: ${{ steps.plan.outputs.game_slug }}
+      upload_dir: ${{ steps.plan.outputs.upload_dir }}
     steps:
       - name: 规划构建矩阵
         id: plan
@@ -68,6 +85,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           PLATFORM: ${{ inputs.platform }}
           UPLOAD: ${{ inputs.upload }}
+          GAME_INPUT: ${{ inputs.game_slug }}
+          UPLOAD_DIR_INPUT: ${{ inputs.upload_dir }}
           REF_NAME: ${{ github.ref_name }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
@@ -87,6 +106,33 @@ jobs:
             upload=true
           fi
 
+          # 游戏 slug：手动触发直接取 input；标签触发从 tag 名解析——
+          # 一个分支一个游戏，tag 打在游戏分支上，格式 <game-slug>-v<版本>。
+          # 贪婪匹配到最后一个「-v+数字」，game 本身含连字符也不会切错。
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            game_slug="$GAME_INPUT"
+          else
+            game_slug=$(printf '%s' "$REF_NAME" | sed -n 's/^\(.*\)-v[0-9].*$/\1/p')
+          fi
+          if [ -z "$game_slug" ]; then
+            echo "::error::游戏 slug 为空——手动触发请填 game_slug；推标签时 tag 名必须是 <game-slug>-v<版本>（例如 demo-v1.0.1），纯 v1.0.1 不会触发本工作流"
+            exit 1
+          fi
+          if ! printf '%s' "$game_slug" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_-]*$'; then
+            echo "::error::游戏 slug 含非法字符（只允许字母数字、下划线、连字符）：$game_slug"
+            exit 1
+          fi
+
+          # 上传目录：手动触发取 input；标签触发为空（bucket 根下按 游戏/平台 组织）。
+          # 只做剥边与排雷，不猜意图。
+          upload_dir="${UPLOAD_DIR_INPUT:-}"
+          upload_dir="${upload_dir#/}"
+          upload_dir="${upload_dir%/}"
+          if printf '%s' "$upload_dir" | grep -Eq '(^|/)\.\.?(/|$)|\\|//'; then
+            echo "::error::上传目录不合法（不允许 .. 段、反斜杠或空段）：$upload_dir"
+            exit 1
+          fi
+
           # buildId 与 (game, packageType) 一起构成中控台的幂等键。
           # 分支名可能带斜杠，换成连字符才能进文件名和对象 key。
           build_id="${REF_NAME//\//-}-${RUN_NUMBER}"
@@ -95,9 +141,13 @@ jobs:
             echo "platforms=$platforms"
             echo "build_id=$build_id"
             echo "upload=$upload"
+            echo "game_slug=$game_slug"
+            echo "upload_dir=$upload_dir"
           } >> "$GITHUB_OUTPUT"
 
           echo "平台：$platforms"
+          echo "游戏：$game_slug"
+          echo "上传目录：${upload_dir:-（空，按 游戏/平台 组织）}"
           echo "buildId：$build_id"
           echo "上传与上报：$upload"
 
@@ -118,6 +168,8 @@ jobs:
       PLATFORM: ${{ matrix.platform }}
       BUILD_ID: ${{ needs.prepare.outputs.build_id }}
       DO_UPLOAD: ${{ needs.prepare.outputs.upload }}
+      GAME_SLUG: ${{ needs.prepare.outputs.game_slug }}
+      UPLOAD_DIR: ${{ needs.prepare.outputs.upload_dir }}
     steps:
       - uses: actions/checkout@v4
 
@@ -140,7 +192,6 @@ jobs:
         if: env.DO_UPLOAD == 'true'
         env:
           CONSOLE_URL: ${{ vars.CONSOLE_URL }}
-          CONSOLE_GAME_SLUG: ${{ vars.CONSOLE_GAME_SLUG }}
           CONSOLE_CI_KEY: ${{ secrets.CONSOLE_CI_KEY }}
         run: |
           set -euo pipefail
@@ -148,7 +199,7 @@ jobs:
           # CF_R2_* 由上一步 fetch-secrets 写入 job 环境；这里防的是 gate 侧 key 清单漂移
           for name in CF_R2_ACCOUNT_ID CF_R2_BUCKET CF_R2_PUBLIC_BASE_URL \
                       CF_R2_ACCESS_KEY_ID CF_R2_SECRET_ACCESS_KEY \
-                      CONSOLE_URL CONSOLE_GAME_SLUG CONSOLE_CI_KEY; do
+                      CONSOLE_URL CONSOLE_CI_KEY; do
             [ -n "${!name:-}" ] || missing+=("$name")
           done
           if [ ${#missing[@]} -gt 0 ]; then
@@ -164,15 +215,13 @@ jobs:
 
       - name: 打包 zip
         id: pack
-        env:
-          GAME: ${{ vars.CONSOLE_GAME_SLUG || 'game' }}
         run: |
           set -euo pipefail
           src="dist/$PLATFORM"
           [ -d "$src" ] || { echo "::error::构建产物目录不存在：$src"; exit 1; }
 
           mkdir -p out
-          zip_name="${GAME}-${PLATFORM}-${BUILD_ID}.zip"
+          zip_name="${GAME_SLUG}-${PLATFORM}-${BUILD_ID}.zip"
           zip_path="$PWD/out/$zip_name"
 
           # 在产物目录内打包：解压后 game.js / game.json 在压缩包根层，
@@ -207,8 +256,6 @@ jobs:
           # R2 不接受 aws-cli 默认附加的分块校验头，要求「仅在必要时计算」
           AWS_REQUEST_CHECKSUM_CALCULATION: when_required
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
-          R2_PREFIX: ${{ vars.R2_PREFIX }}
-          GAME: ${{ vars.CONSOLE_GAME_SLUG }}
           ZIP_NAME: ${{ steps.pack.outputs.zip_name }}
           ZIP_PATH: ${{ steps.pack.outputs.zip_path }}
         run: |
@@ -218,10 +265,8 @@ jobs:
           export AWS_ACCESS_KEY_ID="$CF_R2_ACCESS_KEY_ID"
           export AWS_SECRET_ACCESS_KEY="$CF_R2_SECRET_ACCESS_KEY"
 
-          prefix="${R2_PREFIX:-}"
-          prefix="${prefix#/}"
-          prefix="${prefix%/}"
-          key="${prefix:+$prefix/}${GAME}/${PLATFORM}/${ZIP_NAME}"
+          # 上传目录已在 prepare 阶段剥边、排雷；空 = bucket 根下按 游戏/平台 组织
+          key="${UPLOAD_DIR:+$UPLOAD_DIR/}${GAME_SLUG}/${PLATFORM}/${ZIP_NAME}"
 
           aws s3 cp "$ZIP_PATH" "s3://${CF_R2_BUCKET}/${key}" \
             --endpoint-url "https://${CF_R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
@@ -249,7 +294,6 @@ jobs:
         env:
           CONSOLE_URL: ${{ vars.CONSOLE_URL }}
           CI_KEY: ${{ secrets.CONSOLE_CI_KEY }}
-          GAME: ${{ vars.CONSOLE_GAME_SLUG }}
           ARTIFACT_URL: ${{ steps.r2.outputs.artifact_url }}
           SIZE_BYTES: ${{ steps.pack.outputs.size }}
           SHA256: ${{ steps.pack.outputs.sha256 }}
@@ -262,7 +306,7 @@ jobs:
           description="$(git log -1 --pretty=%s) (${REF_NAME})"
 
           payload=$(jq -n \
-            --arg game        "$GAME" \
+            --arg game        "$GAME_SLUG" \
             --arg packageType "$PLATFORM" \
             --arg buildId     "$BUILD_ID" \
             --arg artifactUrl "$ARTIFACT_URL" \
@@ -298,6 +342,8 @@ jobs:
             echo
             echo "| 项 | 值 |"
             echo "| --- | --- |"
+            echo "| 游戏 | \`${GAME_SLUG}\` |"
+            echo "| 上传目录 | ${UPLOAD_DIR:-（空）} |"
             echo "| buildId | \`${BUILD_ID}\` |"
             echo "| 包 | \`${ZIP_NAME}\` |"
             echo "| 大小 | $((SIZE_BYTES / 1024)) KB |"
