@@ -1,13 +1,13 @@
 name: release
 
-# 构建小游戏产物 → 上传到 Cloudflare R2 → 把元数据上报给 deploy-center。
+# 构建小游戏产物 → 上传到 Cloudflare R2 → 把元数据上报给发布中控台。
 #
 # 触发方式：
 #   - 推 <game-slug>-v* 标签：构建全部平台（h5 + wechat + douyin），游戏取自 tag 名
 #   - 手动触发：可选单个平台或 all；取消勾选 upload 则只构建并把 zip 挂成
 #     Actions artifact，不碰 R2、不上报（第一次验证用这个）
 #
-# 产物文件不经过中控台（deploy-center docs/ci-report.md D1）：CI 只负责把包放到
+# 产物文件不经过中控台：CI 只负责把包放到
 # 一个长期可访问的地址，再 POST 元数据。上报只登记，不触发发布——发布由人在后台发起。
 #
 # R2 五件套（account_id / bucket / public_base_url / access_key_id /

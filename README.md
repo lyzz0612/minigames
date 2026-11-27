@@ -11,8 +11,6 @@
 | `framework`（默认） | Pixi v8 + 平台适配层的小游戏框架 demo |
 | 其他 | 每个游戏一个分支。构建参数（游戏 slug、上传目录）是每次构建的输入，不绑在仓库配置上 |
 
-发布中控台的源码在 [deploy-center 分支](https://github.com/lyzz0612/minigames/tree/deploy-center)，独立部署为 Docker 镜像 `ghcr.io/lyzz0612/minigames`，构建上报接口见该分支的 [docs/ci-report.md](https://github.com/lyzz0612/minigames/blob/deploy-center/docs/ci-report.md)。
-
 ## 技术栈
 
 - [Pixi v8](https://pixijs.com/) + TypeScript + Vite 5
@@ -52,7 +50,7 @@ npm run typecheck      # tsc --noEmit
 
 ### 凭据与配置
 
-- **R2 五件套**（account_id / bucket / public_base_url / access_key_id / secret_access_key）不存本仓库：CI 用 [lyzz0612/shared-workflows](https://github.com/lyzz0612/shared-workflows) 的 `fetch-secrets@v1` 凭 GitHub OIDC 从 [Secret Gate](https://secret-gate.skyup.top)（源码 [lyzz0612/deploy-center](https://github.com/lyzz0612/deploy-center)）拉取 `cf/r2` 组，写入 `CF_R2_*` 环境变量并在日志中打码。首次运行会自动登记为 guest 并在导出处失败——去 gate 后台把本仓库身份提级 normal 并授权 `cf/r2` 组，再跑即绿。
+- **R2 五件套**（account_id / bucket / public_base_url / access_key_id / secret_access_key）不存本仓库：CI 用 [lyzz0612/shared-workflows](https://github.com/lyzz0612/shared-workflows) 的 `fetch-secrets@v1` 凭 GitHub OIDC 从 [Secret Gate](https://secret-gate.skyup.top)（源码 [lyzz0612/secret-gate](https://github.com/lyzz0612/secret-gate)）拉取 `cf/r2` 组，写入 `CF_R2_*` 环境变量并在日志中打码。首次运行会自动登记为 guest 并在导出处失败——去 gate 后台把本仓库身份提级 normal 并授权 `cf/r2` 组，再跑即绿。
 - 本仓库只需要两个配置：
 
 | 类型 | 名称 | 用途 |
